@@ -60,8 +60,6 @@ if uploaded_file:
     # Detecta automaticamente o tipo do Excel (xls ou xlsx)
     try:
         df = pd.read_excel(uploaded_file, header=None, dtype=str, engine="openpyxl")
-    except Exception:
-        df = pd.read_excel(uploaded_file, header=None, dtype=str, engine="xlrd")
         total_rows = len(df)
 
         # Buscar CNPJ e Mês/Ano
