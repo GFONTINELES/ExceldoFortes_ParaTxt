@@ -57,9 +57,8 @@ def normalize_number_str(s: str):
         return None
 
 if uploaded_file:
-    # Detecta automaticamente o tipo do Excel (xls ou xlsx)
     try:
-        df = pd.read_excel(uploaded_file, header=None, dtype=str, engine="openpyxl")
+        df = pd.read_excel(uploaded_file, header=None, dtype=str)
         total_rows = len(df)
 
         # Buscar CNPJ e Mês/Ano
