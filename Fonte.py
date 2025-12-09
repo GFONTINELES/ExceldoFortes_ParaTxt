@@ -58,10 +58,8 @@ def normalize_number_str(s: str):
         return None
 
 def line_has_text(row_cells):
-    """Retorna True se a linha tiver ao menos uma célula contendo letras (alfabeto),
-       excluindo a célula do código (primeira não vazia)."""
+    """Retorna True se a linha tiver ao menos uma célula contendo letras."""
     pattern_letters = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ]")
-    # verificar todas as células se contêm letras
     for cell in row_cells:
         if cell is None:
             continue
@@ -87,21 +85,59 @@ if uploaded_file:
 
         total_rows = len(df)
 
-        # Buscar CNPJ e Mês/Ano
+        # -------------------------------
+        # Buscar CNPJ e Mês/Ano (VARRE TODA A PLANILHA E PEGA A 2ª OCORRÊNCIA)
+        # -------------------------------
+        # texto de topo (mantido para mes/ano)
         top_area = df.iloc[:20, :20].fillna("").astype(str)
         text_join = " ".join(top_area.values.flatten())
-        cnpj_match = re.search(r"CNPJ[:\- ]*\s*([\d\.\-/]+)", text_join, re.IGNORECASE)
+
+        # varre toda a planilha para localizar TODAS as ocorrências possíveis de CNPJ
+        all_text = " ".join(df.fillna("").astype(str).values.flatten())
+
+        # padrões possíveis: com label "CNPJ", formatado ou apenas 14 dígitos
+        matches_label = re.findall(r"CNPJ[:\- ]*\s*([\d\.\-/]+)", all_text, re.IGNORECASE)
+        matches_formatted = re.findall(r"\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2}", all_text)
+        matches_plain14 = re.findall(r"\b(\d{14})\b", all_text)
+
+        # combinar mantendo ordem de aparição: procurar por qualquer ocorrência usando um regex que capture qualquer dos padrões
+        combined_pattern = re.compile(r"(CNPJ[:\- ]*\s*[\d\.\-/]+)|(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})|(\b\d{14}\b)", re.IGNORECASE)
+        combined = []
+        for m in combined_pattern.finditer(all_text):
+            txt = m.group(0)
+            # extrai apenas dígitos
+            digits = re.sub(r"\D", "", txt)
+            if len(digits) == 14:
+                combined.append(digits)
+
+        # Agora escolhe a segunda ocorrência (índice 1)
+        if len(combined) >= 2:
+            cnpj = combined[1]
+        elif len(combined) == 1:
+            cnpj = combined[0]
+        else:
+            # fallback: tentar no text_join (top area) como antes
+            cnpjs_top = re.findall(r"CNPJ[:\- ]*\s*([\d\.\-/]+)", text_join, re.IGNORECASE)
+            if len(cnpjs_top) >= 2:
+                cnpj = re.sub(r"\D", "", cnpjs_top[1])
+            elif len(cnpjs_top) == 1:
+                cnpj = re.sub(r"\D", "", cnpjs_top[0])
+            else:
+                st.warning("⚠️ Não foi possível localizar dois CNPJs; usando CNPJ padrão.")
+                cnpj = "00000000000000"
+
+        # Mês/Ano (mantém seu código original)
         mesano_match = re.search(r"M[eê]s/?Ano[:\- ]*\s*([0-9]{2}/[0-9]{4})", text_join, re.IGNORECASE)
 
-        if cnpj_match and mesano_match:
-            cnpj = re.sub(r'\D', '', cnpj_match.group(1))
+        if mesano_match:
             mesano = mesano_match.group(1)
             mes, ano = [int(x) for x in mesano.split('/')]
             data_ini = datetime(ano, mes, 1)
             data_fim = datetime(ano, mes + 1, 1) - pd.Timedelta(days=1) if mes < 12 else datetime(ano, 12, 31)
         else:
-            st.warning("⚠️ Não foi possível identificar CNPJ ou Mês/Ano automaticamente.")
-            cnpj, data_ini, data_fim = "00000000000000", datetime.now(), datetime.now()
+            st.warning("⚠️ Não foi possível identificar Mês/Ano automaticamente.")
+            data_ini = datetime.now()
+            data_fim = datetime.now()
 
         # Procurar blocos "TOTAL GERAL"
         total_geral_idxs = []
@@ -120,11 +156,9 @@ if uploaded_file:
                 for idx in range(start_idx, total_rows):
                     row_cells = df.iloc[idx].fillna("").astype(str).tolist()
 
-                    # Linha vazia → fim do bloco
                     if all(str(x).strip() == "" for x in row_cells):
                         break
 
-                    # Pegar primeira célula não vazia
                     first_non_empty = None
                     for cell in row_cells:
                         if str(cell).strip() != "":
@@ -134,31 +168,24 @@ if uploaded_file:
                     if not first_non_empty:
                         continue
 
-                    # Validar se a primeira célula não vazia começa com código de 3 dígitos
                     m_code = re.match(r'^(\d{3})\b', first_non_empty)
                     if not m_code:
                         continue
 
                     codigo = m_code.group(1)
 
-                    # Requisito extra: a linha deve conter AO MENOS UMA célula com texto (letras),
-                    # para garantir que não é uma linha numérica solta (totais e bases).
                     if not line_has_text(row_cells):
-                        # se a linha não tem descrição (somente números), ignorar
                         continue
 
-                    # Procurar valor numérico na MESMA LINHA
                     valores_na_linha = []
                     for cell in row_cells:
                         v = normalize_number_str(cell)
                         if v is not None and 0.01 <= abs(v) < 1e8:
                             valores_na_linha.append(v)
 
-                    # Se a linha não tiver nenhum número, ignora
                     if not valores_na_linha:
                         continue
 
-                    # Pega o último valor (geralmente o total da linha)
                     valor = valores_na_linha[-1]
                     found_all.append((codigo, valor))
 
@@ -169,10 +196,8 @@ if uploaded_file:
                 df_group = df_found.groupby("codigo", as_index=False)["valor"].sum()
                 df_group = df_group.sort_values("codigo")
 
-                # Formatar valores: sem ponto, com vírgula decimal
                 df_group["valor_fmt"] = df_group["valor"].apply(lambda x: f"{x:.2f}".replace(".", ","))
 
-                # Montar TXT
                 header_line = f"{cnpj}|{data_ini.strftime('%d%m%Y')}|{data_fim.strftime('%d%m%Y')}|"
                 txt_lines = [header_line] + [f"{r['codigo']}|{r['valor_fmt']}|" for _, r in df_group.iterrows()]
                 txt_output = "\n".join(txt_lines) + "\n"
